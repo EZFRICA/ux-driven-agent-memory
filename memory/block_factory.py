@@ -95,8 +95,9 @@ def delete_block_stitching(block_id: str, dll: dict) -> dict:
     try:
         client = get_weaviate_client()
         try:
-            delete_block_index(client, block_id)
-            delete_block_vectors(client, block_id)
+            agent_id = dll.get("agent_id") or "default_agent"
+            delete_block_index(client, agent_id, block_id)
+            delete_block_vectors(client, agent_id, block_id)
         finally:
             client.close()
     except Exception as e:
@@ -149,9 +150,9 @@ def create_dynamic_block(
             client = wcd_client.get_weaviate_client()
             try:
                 # 2A: Index Keywords
-                upsert_block_index(client, block_id, keywords, block_type)
+                upsert_block_index(client, agent_id, block_id, keywords, block_type)
                 # 2B: Ingest initial Content
-                wcd_client.ingest_block(client, "TravelDynamic", block_id, block_type, initial_content)
+                wcd_client.ingest_block(client, agent_id, "TravelDynamic", block_id, block_type, initial_content)
                 logger.debug("Weaviate content & index sync: block '%s' ingested.", block_id)
             finally:
                 client.close()
@@ -230,8 +231,8 @@ def update_block_content(
             try:
                 # 2A: Re-ingest content (delete old, insert new)
                 collection = "TravelFixed" if node.get("is_fixed") else "TravelDynamic"
-                wcd_client.delete_block_vectors(client, block_id, collection_name=collection)
-                wcd_client.ingest_block(client, collection, block_id, node["type"], new_content)
+                wcd_client.delete_block_vectors(client, agent_id, block_id, collection_name=collection)
+                wcd_client.ingest_block(client, agent_id, collection, block_id, node["type"], new_content)
                 logger.debug("Cascade: Weaviate block '%s' re-ingested into '%s'.", block_id, collection)
             finally:
                 client.close()

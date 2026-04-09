@@ -60,6 +60,12 @@ def init_block_index_schema():
                         description="Unique block identifier (e.g. 'traveler_preferences')",
                     ),
                     Property(
+                        name="agent_id",
+                        data_type=DataType.TEXT,
+                        tokenization=Tokenization.FIELD,
+                        description="Letta Agent ID for isolation",
+                    ),
+                    Property(
                         name="block_type",
                         data_type=DataType.TEXT,
                         tokenization=Tokenization.FIELD,
@@ -71,9 +77,9 @@ def init_block_index_schema():
                         description="Whether the block is active in LLM context",
                     ),
                 ],
-                vector_config=Configure.Vector.text2vec_google_aistudio(
-                    vectorizer_name="keywords_text",
-                    model_id="gemini-embedding-001",
+                vector_config=Configure.Vectors.text2vec_google_gemini(
+                    name="content",
+                    model="gemini-embedding-2-preview",
                 ),
             )
             logger.info("Created collection: BlockIndex")
@@ -124,9 +130,9 @@ def init_travel_fixed_schema():
                         description="Last content update timestamp",
                     ),
                 ],
-                vector_config=Configure.Vector.text2vec_google_aistudio(
-                    vectorizer_name="content",
-                    model_id="gemini-embedding-001",
+                vector_config=Configure.Vectors.text2vec_google_gemini(
+                    name="content",
+                    model="gemini-embedding-2-preview",
                 ),
             )
             logger.info("Created collection: TravelFixed")
@@ -182,9 +188,9 @@ def init_travel_dynamic_schema():
                         description="Last content update timestamp",
                     ),
                 ],
-                vector_config=Configure.Vector.text2vec_google_aistudio(
-                    vectorizer_name="content",
-                    model_id="gemini-embedding-001",
+                vector_config=Configure.Vectors.text2vec_google_gemini(
+                    name="content",
+                    model="gemini-embedding-2-preview",
                 ),
             )
             logger.info("Created collection: TravelDynamic")

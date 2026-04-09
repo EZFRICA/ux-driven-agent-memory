@@ -43,6 +43,7 @@ class AgentState(TypedDict):
     next: str
     agent_id: str
     search_enabled: bool  # New toggle for Google Search
+    memory_only_mode: bool  # Toggle for Memory-only mode (ignore history)
     needs_new_block: str
     proposed_block_config: dict
 
@@ -210,7 +211,17 @@ INSTRUCTIONS:
     if state.get("search_enabled"):
         current_llm = _llm.bind(tools=[{"google_search": {}}])
 
-    response = await current_llm.ainvoke([SystemMessage(content=system_prompt)] + messages)
+    # Determine message payload based on memory_only_mode
+    if state.get("memory_only_mode"):
+        # Find the last human message
+        last_human_message = next((msg for msg in reversed(messages) if isinstance(msg, HumanMessage)), None)
+        payload = [SystemMessage(content=system_prompt)]
+        if last_human_message:
+            payload.append(last_human_message)
+    else:
+        payload = [SystemMessage(content=system_prompt)] + messages
+
+    response = await current_llm.ainvoke(payload)
 
     # Extract text — Gemini may return string or list of content blocks
     raw = response.content

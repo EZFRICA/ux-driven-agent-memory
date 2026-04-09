@@ -50,6 +50,7 @@ with st.sidebar:
     st.divider()
     
     search_on = st.toggle("🔍 Search Online (Gemini Grounding)", value=False, help="Enables real-time Google search")
+    memory_only_on = st.toggle("🧠 Memory-Only Mode", value=False, help="Forces the LLM to rely ONLY on DLL blocks, ignoring chat history")
     st.divider()
     
     if st.button("🗑️ Reset Chat", use_container_width=True):
@@ -57,6 +58,65 @@ with st.sidebar:
         st.session_state.langchain_history = []
         st.session_state.pending_proposal = None
         st.rerun()
+
+    if st.button("☁️ Recover Letta Blocks", use_container_width=True, help="Retrieve dynamic blocks stored in Letta that are missing locally."):
+        with st.spinner("Fetching missing blocks from Letta..."):
+            try:
+                # We fetch the agent state to find all blocks attached
+                # Using Letta SDK to list blocks (could be via agent state or blocks list)
+                try:
+                    blocks = letta_client.letta.agents.blocks.list(agent_id=agent_id)
+                except AttributeError:
+                    # Fallback if list is not directly supported this way
+                    try:
+                        agent_state = letta_client.letta.agents.get(agent_id=agent_id)
+                        blocks = getattr(agent_state.memory, "blocks", [])
+                    except AttributeError:
+                        blocks = []
+                
+                current_labels = [n["id"] for n in get_all_nodes(dll_state)]
+                recovered_count = 0
+                for b in blocks:
+                    label = b.get("label") if isinstance(b, dict) else getattr(b, "label", None)
+                    content = b.get("value") if isinstance(b, dict) else getattr(b, "value", None)
+                    
+                    if not label:
+                        continue
+                        
+                    if label not in current_labels and label not in letta_client.INITIAL_FIXED_BLOCKS:
+                        try:
+                            from memory.dll_manager import add_node
+                            if "dynamic_block_count" in dll_state and dll_state["dynamic_block_count"] < dll_state["dynamic_block_max"]:
+                                dll_node = {
+                                    "id": label,
+                                    "label": label.replace("_", " ").title(),
+                                    "type": "projet",
+                                    "keywords": [],
+                                    "is_fixed": False,
+                                    "active": True
+                                }
+                                # Use a safe add that doesn't trigger weaviate unless we want to, or use insert_node_by_type
+                                # Actually we should just insert to DLL
+                                from memory.block_factory import insert_node_by_type
+                                dll_node["last_modified"] = datetime.now().isoformat()
+                                dll_node["access_count"] = 0
+                                dll_node["created_by"] = "recovered"
+                                dll_state = insert_node_by_type("projet", dll_node, dll_state)
+                                dll_state["dynamic_block_count"] += 1
+                                st.session_state.memory_facts[label] = content
+                                recovered_count += 1
+                        except Exception as e:
+                            st.warning(f"Failed to recover {label}: {e}")
+                            
+                if recovered_count > 0:
+                    st.success(f"Recovered {recovered_count} block(s).")
+                    save_dll(dll_state)
+                    # We might need to run save_dll to disk
+                    st.rerun()
+                else:
+                    st.warning("No missing blocks found in Letta.")
+            except Exception as e:
+                st.error(f"Failed to recover blocks: {e}")
 
 # Initial sync of memory if empty
 if not st.session_state.memory_facts:
@@ -264,7 +324,8 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                     inputs = {
                         "messages": st.session_state.langchain_history, 
                         "agent_id": agent_id,
-                        "search_enabled": search_on
+                        "search_enabled": search_on,
+                        "memory_only_mode": memory_only_on
                     }
                     
                     import asyncio

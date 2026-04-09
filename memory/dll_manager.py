@@ -119,7 +119,8 @@ def init_dll() -> dict:
         try:
             setup_collections(client)
             for node_id, node in dll["nodes"].items():
-                upsert_block_index(client, node_id, node["keywords"], node["type"])
+                agent_id = dll.get("agent_id") or "default_agent"
+                upsert_block_index(client, agent_id, node_id, node["keywords"], node["type"])
             logger.info("All 4 fixed blocks indexed in Weaviate BlockIndex.")
         finally:
             client.close()
@@ -170,7 +171,8 @@ def search_memory(query: str, dll: dict) -> list[dict]:
         from memory.weaviate_cloud_client import get_weaviate_client, search_block_index
         client = get_weaviate_client()
         try:
-            weaviate_results = search_block_index(client, query, limit=12)
+            agent_id = dll.get("agent_id") or "default_agent"
+            weaviate_results = search_block_index(client, agent_id, query, limit=12)
         finally:
             client.close()
     except Exception as e:
@@ -286,8 +288,9 @@ def update_node_keywords(block_id: str, keywords: list[str], dll: dict) -> dict:
         from memory.weaviate_cloud_client import get_weaviate_client, upsert_block_index
         client = get_weaviate_client()
         try:
+            agent_id = dll.get("agent_id") or "default_agent"
             block_type = dll["nodes"][block_id]["type"]
-            upsert_block_index(client, block_id, keywords, block_type)
+            upsert_block_index(client, agent_id, block_id, keywords, block_type)
             logger.debug("Node '%s' re-indexed in Weaviate with new keywords.", block_id)
         finally:
             client.close()

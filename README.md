@@ -48,17 +48,23 @@ uv sync
 ```
 
 ### 4. Initialization
-Before launching the UI, you need to create the required Weaviate schemas and the Letta agent.
+Before launching the UI, you need to create the required Weaviate schemas, create the Letta agent, and synchronize the locally generated metadata with Weaviate.
 
 1.  **Init Weaviate Schemas:**
     ```bash
-    python memory/schema.py
+    uv run memory/schema.py
     ```
 2.  **Create the Letta Agent:**
     ```bash
-    python memory/letta_cloud_client.py --create-agent
+    uv run memory/letta_cloud_client.py --create-agent
     ```
-    *This will auto-save the generated `agent_id` into your user's local `metadata_links.json`.*
+    *This will auto-save the generated `agent_id` into your local `metadata_links.json`.*
+
+3.  **Synchronize Default Blocks to Weaviate:**
+    ```bash
+    uv run memory/sync_memory.py
+    ```
+    *This indexes the 4 foundational blocks (Profile, Preferences, etc.) into the Weaviate BlockIndex, associating them strictly with your new `agent_id`.*
 
 ### 5. Running the Application
 Launch the rich Streamlit dashboard:

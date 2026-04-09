@@ -31,14 +31,14 @@ def sync_all():
             b_type = node.get("type", "projet")
             
             # 1. Sync keywords to BlockIndex (for routing)
-            upsert_block_index(client, b_id, kw, b_type)
+            upsert_block_index(client, b_id, kw, b_type, agent_id)
             
             # 2. Sync content to TravelFixed/TravelDynamic (for archival)
             content = get_core_block_content(agent_id, b_id)
             coll = "TravelFixed" if node.get("is_fixed") else "TravelDynamic"
             
             if content.strip():
-                ingest_block(client, coll, b_id, b_type, content)
+                ingest_block(client, coll, b_id, b_type, content, agent_id)
                 logger.info(f"Synced '{b_id}' to Weaviate.")
             else:
                 logger.debug(f"Skipping content for '{b_id}' (empty).")
