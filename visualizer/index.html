@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UX-Memory Visualizer | DLL Monitor</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --accent-blue: #38bdf8;
+            --accent-green: #4ade80;
+            --accent-purple: #c084fc;
+            --text-main: #f1f5f9;
+            --text-dim: #94a3b8;
+        }
+
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Outfit', sans-serif;
+            margin: 0;
+            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 50px;
+            animation: fadeInDown 0.8s ease-out;
+        }
+
+        h1 {
+            font-weight: 600;
+            letter-spacing: -1px;
+            margin: 0;
+            background: linear-gradient(90deg, var(--accent-blue), var(--accent-purple));
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: 2.5rem;
+        }
+
+        .status-badge {
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid var(--accent-blue);
+            color: var(--accent-blue);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            margin-top: 10px;
+            display: inline-block;
+        }
+
+        #dll-container {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            width: 100%;
+            max-width: 800px;
+            position: relative;
+        }
+
+        .block-node {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            transform-origin: center;
+        }
+
+        .block-node.fixed {
+            border-left: 4px solid var(--accent-purple);
+        }
+
+        .block-node.dynamic {
+            border-left: 4px solid var(--accent-blue);
+        }
+
+        .block-node.injected {
+            border: 1px solid var(--accent-green);
+            box-shadow: 0 0 20px rgba(74, 222, 128, 0.15);
+        }
+
+        .block-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .block-label {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 4px;
+        }
+
+        .block-meta {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .block-score {
+            font-family: monospace;
+            font-size: 1.2rem;
+            color: var(--accent-green);
+        }
+
+        .connector {
+            width: 2px;
+            height: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            align-self: center;
+        }
+
+        .node-enter {
+            opacity: 0;
+            transform: translateY(-20px);
+        }
+
+        .node-exit {
+            opacity: 0;
+            transform: scale(0.9);
+        }
+
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .pulse {
+            width: 8px;
+            height: 8px;
+            background: var(--accent-green);
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+            box-shadow: 0 0 0 rgba(74, 222, 128, 0.4);
+            animation: pulse-ring 2s infinite;
+        }
+
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(74, 222, 128, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(74, 222, 128, 0); }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>DLL MEMORY FLOW</h1>
+        <div class="status-badge"><span class="pulse"></span> LIVE MONITORING</div>
+    </div>
+
+    <div id="dll-container">
+        <!-- Nodes will be injected here -->
+    </div>
+
+    <script>
+        let lastOrder = [];
+
+        async function updateVisualizer() {
+            try {
+                const response = await fetch('/api/memory');
+                const data = await response.json();
+                
+                const container = document.getElementById('dll-container');
+                const nodes = data.nodes;
+                const headId = data.head_id;
+                
+                // Get ordered list from HEAD to TAIL
+                let currentId = headId;
+                const orderedNodes = [];
+                const visited = new Set();
+
+                while (currentId && !visited.has(currentId)) {
+                    visited.add(currentId);
+                    const node = nodes[currentId];
+                    if (node) {
+                        orderedNodes.push(node);
+                        currentId = node.next;
+                    } else {
+                        break;
+                    }
+                }
+
+                renderNodes(orderedNodes);
+            } catch (e) {
+                console.error("Polling error:", e);
+            }
+        }
+
+        function renderNodes(orderedNodes) {
+            const container = document.getElementById('dll-container');
+            
+            // Check if order changed
+            const currentOrderStr = orderedNodes.map(n => n.id).join(',');
+            if (currentOrderStr === lastOrder) return;
+            lastOrder = currentOrderStr;
+
+            container.innerHTML = '';
+
+            orderedNodes.forEach((node, index) => {
+                const nodeEl = document.createElement('div');
+                nodeEl.className = `block-node ${node.is_fixed ? 'fixed' : 'dynamic'}`;
+                
+                // In a real demo, we'd fetch actual "injected" status. 
+                // For now, let's just highlight if active override is on.
+                if (node.active) nodeEl.classList.add('injected');
+
+                nodeEl.innerHTML = `
+                    <div class="block-info">
+                        <span class="block-meta">${node.type} ${node.is_fixed ? '• FIXED' : ''}</span>
+                        <span class="block-label">${node.label}</span>
+                        <span style="font-size: 0.7rem; color: #64748b;">ID: ${node.id}</span>
+                    </div>
+                    <div class="block-score">
+                        ${node.access_count} <span style="font-size: 0.6rem; color: #64748b;">hits</span>
+                    </div>
+                `;
+
+                container.appendChild(nodeEl);
+
+                if (index < orderedNodes.length - 1) {
+                    const line = document.createElement('div');
+                    line.className = 'connector';
+                    container.appendChild(line);
+                }
+            });
+        }
+
+        setInterval(updateVisualizer, 1500);
+        updateVisualizer();
+    </script>
+</body>
+</html>

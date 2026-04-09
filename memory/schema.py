@@ -78,7 +78,7 @@ def init_block_index_schema():
                     ),
                 ],
                 vector_config=Configure.Vectors.text2vec_google_gemini(
-                    name="content",
+                    name="keywords_text",
                     model="gemini-embedding-2-preview",
                 ),
             )

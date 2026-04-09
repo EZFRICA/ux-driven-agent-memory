@@ -21,7 +21,7 @@ from logger import get_logger
 
 logger = get_logger(__name__)
 
-GEMINI_MODEL = "gemini-3.1-flash-lite-preview"
+GEMINI_MODEL = "gemini-flash-lite-latest"
 
 # Main LLM — conversational, slightly creative
 _llm = ChatGoogleGenerativeAI(
@@ -44,6 +44,7 @@ class AgentState(TypedDict):
     agent_id: str
     search_enabled: bool  # New toggle for Google Search
     memory_only_mode: bool  # Toggle for Memory-only mode (ignore history)
+    strict_manual_mode: bool
     needs_new_block: str
     proposed_block_config: dict
 
@@ -185,18 +186,20 @@ async def planner_node_dll(state: AgentState):
 
     # 2. DLL Vector Routing
     dll = load_dll()
-    relevant_blocks = search_memory(user_query, dll)
+    relevant_blocks = search_memory(user_query, dll, strict_manual=state.get("strict_manual_mode", False))
 
     # 3. Compile Working Context from Letta
     context_str = compile_working_context(agent_id, relevant_blocks, user_query)
 
     # 4. Build system prompt and call Gemini
-    active_count = len([n for n in get_all_nodes(dll) if n.get("active", True)])
+    all_nodes = get_all_nodes(dll)
+    total_existing = len(all_nodes)
+    injected_count = len(relevant_blocks)
     injected_labels = " + ".join(b["id"] for b in relevant_blocks) or "none"
 
     system_prompt = f"""You are 'Travel Architect', an expert travel planning assistant.
 
-WORKING CONTEXT (DLL filtered — {len(relevant_blocks)}/{active_count} active blocks injected):
+WORKING CONTEXT (DLL filtered — {injected_count}/{total_existing} blocks injected):
 {context_str}
 
 INSTRUCTIONS:
@@ -237,7 +240,7 @@ INSTRUCTIONS:
         text_content = str(raw)
 
     # System-generated footer — always reflects actual DLL state
-    footer = f"\n\n---\n`[Memory: {injected_labels} | DLL: {active_count}/12 blocks]`"
+    footer = f"\n\n---\n`[Memory: {injected_labels} | DLL: {injected_count}/{total_existing} blocks]`"
     text_content = text_content.rstrip() + footer
     logger.debug("Planner response generated (%d chars).", len(text_content))
 

@@ -79,3 +79,42 @@ The system defines an absolute max context limit of **12 blocks**.
 *   **4 Fixed Blocks** (Profile, Preferences, Active Trip, Session) are *always* included to frame the identity of the agent.
 *   **User Checkboxes ("Force Override")**: If a user checks a dynamic block in the interface, it bypasses the algorithm and is *injected* straight into the AI's prompt.
 *   **BMJ Fill**: Unchecked blocks are semantically scored against the user's latest query. High scoring blocks are automatically grabbed by the algorithm to fill out the remaining available context slots.
+
+## 🧪 Demo & Test Scenarios
+
+### 1. Cold Start & Onboarding (Implicit Knowledge)
+Prove that the agent understands the user's profile without explicit mentions:
+1. In the sidebar, manually edit **Traveler Profile**:
+   - Keywords: `profile, identity, passport, name, client`
+   - Content: *"My name is Paul, 35 years old. My French passport (FR98765) is valid until 2029."*
+2. Edit **Traveler Preferences**:
+   - Keywords: `preferences, stay, budget, food, flight`
+   - Content: *"Solo traveler. I love Japanese culture, local street-food, and I enjoy staying in small traditional hotels (Ryokans). Moderate budget."*
+3. **The Test:** In the Chat, ask: *"If I were to go to Asia, what kind of accommodation would you spontaneously recommend?"*
+4. **Result:** Thanks to the BMJ algorithm, the agent automatically loads your preferences and suggests **Ryokans** or traditional guesthouses, proving it knows who Paul is and what he likes without him stating it in the query.
+
+### 2. Selective Retrieval (The "Secret Info" Test)
+Prove that the agent only knows what is in the DLL:
+1. Edit or Create a dynamic block named **"Tokyo Restaurants"**.
+2. Content: *"For grilled food, absolutely go to 'Kenta-San' in the hidden alley behind Hanazono Temple. It's owned by my friend Tanaka's cousin. Tell him you come from Paul to get the free sake."*
+3. Keywords: `tanaka, kenta, grilled, secret, cousin`.
+4. **Test (OFF):** Uncheck "Force Include" and ask: *"I want to go to Tanaka's cousin's place tonight, do you have the address?"*. The agent finds it via BMJ.
+5. **Test (STRICT):** Turn on **"Disable BMJ Auto-Retrieval"** (Demo Mode) in the sidebar. Ask again. The agent will now be "amnesic" about Tanaka's cousin.
+
+### 3. Automatic Memory Write-back
+Observe the agent taking notes:
+1. Message the agent: *"My new passport number is FR777 and I'm allergic to peanuts."*
+2. **Result:** After the response, refresh the page. Look at the `Traveler Profile` and `Traveler Preferences` blocks. The info has been automatically extracted and persisted to Letta Cloud.
+
+### 3. Real-time Monitoring (Visualizer)
+See the "Brain" move:
+1. Open a new terminal: `uv run python visualizer/server.py`.
+2. Go to `http://localhost:8080`.
+3. Ask about your profile or a specific dynamic block. Watch the nodes animatedly jump to the **HEAD** position as the Move-To-Front (MTF) algorithm prioritizes the most useful context.
+
+### 4. Multi-Tenant Isolation
+Ensure agent-level data security:
+1. Note your current `agent_id` in the sidebar.
+2. Run `uv run memory/letta_cloud_client.py --create-agent` to generate a NEW agent.
+3. Restart Streamlit.
+4. **Result:** All memories from the previous agent are invisible. The Weaviate search is strictly filtered by `agent_id`.

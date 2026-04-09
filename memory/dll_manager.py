@@ -17,9 +17,9 @@ logger = get_logger(__name__)
 # ── Adaptive certainty thresholds by block type ───────────────────────────────
 # Certainty: 0.0 (opposite) to 1.0 (identical) — maps to old similarity scores
 CERTAINTY_THRESHOLDS = {
-    "fondamental": 0.52,  # Profile/prefs — low threshold, frequently above
-    "projet":      0.55,  # Itinerary — neutral threshold
-    "temp":        0.60,  # Session — high threshold, jump to TAIL often
+    "fondamental": 0.55,  # Profile/prefs — low threshold, frequently above
+    "projet":      0.60,  # Itinerary — neutral threshold
+    "temp":        0.80,  # Session — high threshold, jump to TAIL often
 }
 
 # Minimum certainty for a block to be included in the working context
@@ -119,8 +119,10 @@ def init_dll() -> dict:
         try:
             setup_collections(client)
             for node_id, node in dll["nodes"].items():
-                agent_id = dll.get("agent_id") or "default_agent"
-                upsert_block_index(client, agent_id, node_id, node["keywords"], node["type"])
+                agent_id = dll.get("agent_id")
+                if not agent_id:
+                    raise ValueError("Agent ID is not defined in the DLL.")
+                upsert_block_index(client, node_id, node["keywords"], node["type"], agent_id)
             logger.info("All 4 fixed blocks indexed in Weaviate BlockIndex.")
         finally:
             client.close()
@@ -152,7 +154,7 @@ def get_head_threshold(dll: dict) -> float:
     return CERTAINTY_THRESHOLDS.get(head_node["type"], 0.55)
 
 
-def search_memory(query: str, dll: dict) -> list[dict]:
+def search_memory(query: str, dll: dict, strict_manual: bool = False) -> list[dict]:
     """
     Bidirectional Metadata Jump (BMJ) — powered by Weaviate near_text.
 
@@ -171,8 +173,10 @@ def search_memory(query: str, dll: dict) -> list[dict]:
         from memory.weaviate_cloud_client import get_weaviate_client, search_block_index
         client = get_weaviate_client()
         try:
-            agent_id = dll.get("agent_id") or "default_agent"
-            weaviate_results = search_block_index(client, agent_id, query, limit=12)
+            agent_id = dll.get("agent_id")
+            if not agent_id:
+                raise ValueError("Agent ID is not defined in the DLL.")
+            weaviate_results = search_block_index(client, query, agent_id, limit=12)
         finally:
             client.close()
     except Exception as e:
@@ -227,10 +231,11 @@ def search_memory(query: str, dll: dict) -> list[dict]:
     
     top_blocks = [item[1] for item in forced_blocks]
     
-    for certainty, node in dynamic_candidates:
-        # Fill context up to the hard maximum (12 total blocks)
-        if len(top_blocks) < 12 and certainty >= threshold:
-            top_blocks.append(node)
+    if not strict_manual:
+        for certainty, node in dynamic_candidates:
+            # Fill context up to the hard maximum (12 total blocks)
+            if len(top_blocks) < 12 and certainty >= threshold:
+                top_blocks.append(node)
 
     for idx, b in enumerate(top_blocks):
         logger.debug("[%d] Selected: '%s' (type=%s)", idx + 1, b["label"], b["type"])
@@ -288,9 +293,11 @@ def update_node_keywords(block_id: str, keywords: list[str], dll: dict) -> dict:
         from memory.weaviate_cloud_client import get_weaviate_client, upsert_block_index
         client = get_weaviate_client()
         try:
-            agent_id = dll.get("agent_id") or "default_agent"
+            agent_id = dll.get("agent_id")
+            if not agent_id:
+                raise ValueError("Agent ID is not defined in the DLL.")
             block_type = dll["nodes"][block_id]["type"]
-            upsert_block_index(client, agent_id, block_id, keywords, block_type)
+            upsert_block_index(client, block_id, keywords, block_type, agent_id)
             logger.debug("Node '%s' re-indexed in Weaviate with new keywords.", block_id)
         finally:
             client.close()

@@ -86,16 +86,23 @@ def update_block(agent_id: str, block_label: str, new_content: str) -> None:
 def append_block(agent_id: str, block_label: str, content: str, block_type: str = "projet") -> None:
     """
     Create a new dynamic block in Letta Cloud and attach it to the Agent's Core Memory.
+    If the block already exists (409 Conflict), falls back to updating the existing block.
     """
     logger.debug("Creating block '%s' and attaching to agent %s...", block_label, agent_id)
     try:
-        # Create the block using Letta's BlockManager
+        # 1. Create the block using Letta's BlockManager
         new_block = letta.blocks.create(label=block_label, value=content, limit=2000)
-        # Attach the newly created block to the specific agent
+        # 2. Attach the newly created block to the specific agent
         letta.agents.blocks.attach(block_id=new_block.id, agent_id=agent_id)
         logger.debug("Letta block '%s' created and attached successfully.", block_label)
     except Exception as e:
-        logger.error("Letta: failed to create and attach block '%s': %s", block_label, e)
+        if "409" in str(e) or "UniqueViolationError" in str(e):
+            logger.debug("Block '%s' already exists for this agent. Falling back to update.", block_label)
+            # If it already exists, just update its value (this handles our 'Soft Delete' zombie blocks)
+            update_block(agent_id, block_label, content)
+        else:
+            logger.error("Letta: failed to create/attach block '%s': %s", block_label, e)
+            raise e
 
 
 def delete_block(agent_id: str, block_label: str) -> None:

@@ -51,6 +51,7 @@ with st.sidebar:
     
     search_on = st.toggle("🔍 Search Online (Gemini Grounding)", value=False, help="Enables real-time Google search")
     memory_only_on = st.toggle("🧠 Memory-Only Mode", value=False, help="Forces the LLM to rely ONLY on DLL blocks, ignoring chat history")
+    strict_manual_on = st.toggle("🚦 Disable BMJ Auto-Retrieval", value=False, help="Demo Mode: Unchecked blocks will NEVER be retrieved automatically.")
     st.divider()
     
     if st.button("🗑️ Reset Chat", use_container_width=True):
@@ -325,7 +326,8 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         "messages": st.session_state.langchain_history, 
                         "agent_id": agent_id,
                         "search_enabled": search_on,
-                        "memory_only_mode": memory_only_on
+                        "memory_only_mode": memory_only_on,
+                        "strict_manual_mode": strict_manual_on
                     }
                     
                     import asyncio
