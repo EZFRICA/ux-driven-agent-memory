@@ -12,7 +12,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from agent.agent_graph_dll import create_dll_agent_graph
 from memory.dll_manager import load_dll, save_dll, get_all_nodes, toggle_block, update_node_keywords
 from memory.block_factory import create_dynamic_block, update_block_content, delete_block_stitching
-from memory.letta_cloud_client import update_block, delete_block
+from memory.letta_cloud_client import update_block, delete_block, get_letta_client_async
 from memory import letta_cloud_client as letta_client
 from memory import weaviate_cloud_client as wcd_client
 from memory.context_compiler import get_core_block_content
@@ -36,7 +36,7 @@ if "sync_version" not in st.session_state:
     st.session_state.sync_version = 0
 
 # Load local DLL state
-dll_state = load_dll()
+dll_state = asyncio.run(load_dll())
 agent_id = dll_state.get("agent_id")
 
 if not agent_id:
@@ -64,15 +64,16 @@ with st.sidebar:
         with st.spinner("Fetching missing blocks from Letta..."):
             try:
                 # We fetch the agent state to find all blocks attached
-                # Using Letta SDK to list blocks (could be via agent state or blocks list)
+                # Using Letta SDK to list blocks (Async)
+                letta = get_letta_client_async()
                 try:
-                    blocks = letta_client.letta.agents.blocks.list(agent_id=agent_id)
-                except AttributeError:
+                    blocks = asyncio.run(letta.agents.blocks.list(agent_id=agent_id))
+                except Exception:
                     # Fallback if list is not directly supported this way
                     try:
-                        agent_state = letta_client.letta.agents.get(agent_id=agent_id)
+                        agent_state = asyncio.run(letta.agents.get(agent_id=agent_id))
                         blocks = getattr(agent_state.memory, "blocks", [])
-                    except AttributeError:
+                    except Exception:
                         blocks = []
                 
                 current_labels = [n["id"] for n in get_all_nodes(dll_state)]
@@ -127,13 +128,13 @@ if not st.session_state.memory_facts:
         
         for node in nodes:
             b_id = node['id']
-            content = get_core_block_content(agent_id, b_id)
+            content = asyncio.run(get_core_block_content(agent_id, b_id))
             
             if content is None:  # Block returns 404 Not Found from Letta
                 if not node.get("is_fixed", False):
                     # Automatic cleanup for orphaned dynamic blocks
                     try:
-                        dll_state = delete_block_stitching(b_id, dll_state)
+                        dll_state = asyncio.run(delete_block_stitching(b_id, dll_state))
                         ghost_blocks_deleted = True
                     except Exception as e:
                         st.error(f"Cleanup error for {b_id}: {e}")
@@ -154,17 +155,17 @@ with c1:
 with c2:
     if st.button("🔄 Sync Cloud", use_container_width=True, help="Force reload from Letta Cloud"):
         with st.spinner("Forcing Cloud Sync..."):
-            current_dll = load_dll()
+            current_dll = asyncio.run(load_dll())
             nodes = get_all_nodes(current_dll)
             fresh_facts = {}
             ghost_blocks_deleted = False
             for node in nodes:
                 b_id = node["id"]
-                content = get_core_block_content(agent_id, b_id)
+                content = asyncio.run(get_core_block_content(agent_id, b_id))
                 if content is None:
                     if not node.get("is_fixed", False):
                         try:
-                            current_dll = delete_block_stitching(b_id, current_dll)
+                            current_dll = asyncio.run(delete_block_stitching(b_id, current_dll))
                             ghost_blocks_deleted = True
                         except Exception as e:
                             st.warning(f"Cleanup error for {b_id}: {e}")
@@ -206,10 +207,10 @@ with col_left:
                 m_id = m_label.lower().replace(" ", "_")
                 kw_list = [k.strip() for k in m_keywords.split(",") if k.strip()]
                 try:
-                    dll_state = create_dynamic_block(
+                    dll_state = asyncio.run(create_dynamic_block(
                         m_id, m_label, m_type, m_content, kw_list, "user_manual",
                         dll_state, letta_client, wcd_client
-                    )
+                    ))
                     st.session_state.memory_facts[m_id] = m_content
                     st.success(f"Block '{m_label}' created!")
                     st.rerun()
@@ -239,7 +240,7 @@ with col_left:
                 new_kw_str = st.text_input("Update keywords", value=", ".join(node.get("keywords", [])), key=f"kw_in_{b_id}_v{v}")
                 if st.button("Re-vectorize", key=f"vec_btn_{b_id}_v{v}"):
                     new_kw_list = [k.strip() for k in new_kw_str.split(",") if k.strip()]
-                    dll_state = update_node_keywords(b_id, new_kw_list, dll_state)
+                    dll_state = asyncio.run(update_node_keywords(b_id, new_kw_list, dll_state))
                     save_dll(dll_state)
                     st.success("Re-vectorized!")
                     st.rerun()
@@ -247,9 +248,9 @@ with col_left:
                 curr_txt = st.text_area("Block content", value=live_content, height=150, key=f"txt_in_{b_id}_v{v}")
                 if st.button("💾 Save (Sync all)", key=f"save_btn_{b_id}_v{v}", type="primary"):
                     try:
-                        dll_state = update_block_content(
+                        dll_state = asyncio.run(update_block_content(
                             b_id, curr_txt, node.get("keywords", []), dll_state, letta_client, wcd_client
-                        )
+                        ))
                         st.session_state.memory_facts[b_id] = curr_txt
                         st.success("Synced to Letta & Weaviate!")
                         st.rerun()
@@ -269,9 +270,9 @@ with col_left:
                 
                 if not is_fixed:
                     if st.button("🗑️ Delete", key=f"del_btn_{b_id}_v{v}", use_container_width=True):
-                        dll_state = delete_block_stitching(b_id, dll_state)
+                        dll_state = asyncio.run(delete_block_stitching(b_id, dll_state))
                         save_dll(dll_state)
-                        delete_block(agent_id, b_id)
+                        asyncio.run(delete_block(agent_id, b_id))
                         st.rerun()
 
 # ── RIGHT COL: CHAT ──
@@ -293,11 +294,11 @@ with col_right:
                 p1, p2 = st.columns(2)
                 if p1.button(f"✅ Create '{prop['label']}'", key="create_prop"):
                     try:
-                        create_dynamic_block(
+                        asyncio.run(create_dynamic_block(
                             prop["proposed_id"], prop["label"], prop["type"], 
                             prop["initial_content"], prop["keywords"], "agent_proposal",
                             dll_state, letta_client, wcd_client
-                        )
+                        ))
                         st.session_state.memory_facts[prop["proposed_id"]] = prop["initial_content"]
                         st.session_state.pending_proposal = None
                         st.rerun()
@@ -349,16 +350,16 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         st.session_state.pending_proposal = result.get("proposed_block_config")
                         
                     # Final sync of memory facts
-                    dll_state = load_dll()  # Reload to get MTF changes
+                    dll_state = asyncio.run(load_dll())  # Reload to get MTF changes
                     nodes_to_check = list(dll_state["nodes"].keys())
                     ghost_blocks_deleted = False
                     
                     for b_id in nodes_to_check:
-                         content = get_core_block_content(agent_id, b_id)
+                         content = asyncio.run(get_core_block_content(agent_id, b_id))
                          if content is None:
                              if not dll_state["nodes"].get(b_id, {}).get("is_fixed", False):
                                  try:
-                                     dll_state = delete_block_stitching(b_id, dll_state)
+                                     dll_state = asyncio.run(delete_block_stitching(b_id, dll_state))
                                      ghost_blocks_deleted = True
                                  except:
                                      pass

@@ -1,27 +1,50 @@
 """
-Weaviate Cloud Client — operations layer.
-Schema definitions are in schema.py.
-This module handles CRUD operations on BlockIndex, TravelFixed, and TravelDynamic.
+Weaviate Cloud Client — Async Operations Layer.
+All methods are now async to support high-concurrency with FastAPI.
 """
 
 from datetime import datetime, timezone
+import asyncio
 from weaviate.classes.query import MetadataQuery, Filter
+from weaviate.classes.tenants import Tenant
 from weaviate.util import generate_uuid5
-from memory.schema import get_weaviate_client, init_all_schemas
+from memory.schema import get_weaviate_client_async, init_all_schemas
 from logger import get_logger
 
 logger = get_logger(__name__)
 
 
+# ── Tenant Management — Helper ────────────────────────────────────────────────
+
+async def _ensure_tenant_async(collection, tenant_name: str) -> None:
+    """Lazily create tenant if it doesn't exist (Async)."""
+    try:
+        # Weaviate collections in MT mode require explicit tenant creation
+        await collection.tenants.create(tenants=[Tenant(name=tenant_name)])
+        logger.debug("Tenant '%s' created for collection '%s'.", tenant_name, collection.name)
+    except Exception as e:
+        # Weaviate's Python client doesn't always have a clean 'TenantAlreadyExists' exception class
+        # so we check the error message string for common success/conflict patterns.
+        err_msg = str(e).lower()
+        if "already exists" in err_msg or "409" in err_msg:
+            return # Normal case: tenant is already there
+        
+        # Critical error (connection, auth, etc.)
+        logger.error("Failed to ensure tenant '%s': %s", tenant_name, e)
+        raise e
+
+
 # ── BlockIndex operations (DLL routing) ────────────────────────────────────────
 
-def upsert_block_index(client, block_id: str, keywords: list[str], block_type: str, agent_id: str) -> None:
+async def upsert_block_index(client, block_id: str, keywords: list[str], block_type: str, agent_id: str) -> None:
     """
-    Insert or update a block's keyword vector in the BlockIndex collection.
-    The 'keywords_text' field is auto-vectorized by Weaviate for near_text search.
-    Uses deterministic UUID based on agent_id and block_id for upsert behavior.
+    Insert or update a block's keyword vector in the BlockIndex collection (Async).
+    Uses Tenant isolation.
     """
     collection = client.collections.get("BlockIndex")
+    await _ensure_tenant_async(collection, agent_id)
+    
+    tenant_coll = collection.with_tenant(agent_id)
     keywords_text = " ".join(keywords)
     obj_uuid = generate_uuid5(f"{agent_id}_{block_id}")
 
@@ -34,26 +57,27 @@ def upsert_block_index(client, block_id: str, keywords: list[str], block_type: s
     }
 
     try:
-        # Try update first (existing block)
-        collection.data.update(uuid=obj_uuid, properties=properties)
-        logger.debug("BlockIndex updated: '%s' for agent '%s'.", block_id, agent_id)
+        # Async CRUD
+        await tenant_coll.data.update(uuid=obj_uuid, properties=properties)
+        logger.debug("BlockIndex updated: '%s' for tenant '%s'.", block_id, agent_id)
     except Exception:
         # Not found → insert
-        collection.data.insert(uuid=obj_uuid, properties=properties)
-        logger.debug("BlockIndex inserted: '%s' for agent '%s'.", block_id, agent_id)
+        await tenant_coll.data.insert(uuid=obj_uuid, properties=properties)
+        logger.debug("BlockIndex inserted: '%s' for tenant '%s'.", block_id, agent_id)
 
 
-def search_block_index(client, query: str, agent_id: str, limit: int = 12) -> list[dict]:
+async def search_block_index(client, query: str, agent_id: str, limit: int = 12) -> list[dict]:
     """
-    Semantic search on BlockIndex using near_text, scoped to the agent_id.
-    Returns: [{block_id, block_type, certainty}, ...] sorted by relevance (highest first).
+    Semantic search on BlockIndex using near_text (Async).
+    Returns: [{block_id, block_type, certainty}, ...]
     """
     collection = client.collections.get("BlockIndex")
-    response = collection.query.near_text(
+    tenant_coll = collection.with_tenant(agent_id)
+    
+    response = await tenant_coll.query.near_text(
         query=query,
         limit=limit,
         target_vector="keywords_text",
-        filters=Filter.by_property("agent_id").equal(agent_id),
         return_metadata=MetadataQuery(certainty=True),
     )
 
@@ -68,27 +92,25 @@ def search_block_index(client, query: str, agent_id: str, limit: int = 12) -> li
     return results
 
 
-def delete_block_index(client, block_id: str, agent_id: str) -> None:
-    """Remove a block from the BlockIndex collection."""
+async def delete_block_index(client, block_id: str, agent_id: str) -> None:
+    """Remove a block from the BlockIndex collection (Async)."""
     collection = client.collections.get("BlockIndex")
+    tenant_coll = collection.with_tenant(agent_id)
     obj_uuid = generate_uuid5(f"{agent_id}_{block_id}")
     try:
-        collection.data.delete_by_id(obj_uuid)
-        logger.debug("BlockIndex deleted: '%s'.", block_id)
+        await tenant_coll.data.delete_by_id(obj_uuid)
+        logger.debug("BlockIndex deleted: '%s' for tenant '%s'.", block_id, agent_id)
     except Exception as e:
         logger.warning("BlockIndex delete failed for '%s': %s", block_id, e)
 
-def fetch_all_block_indexes(client, agent_id: str) -> list[dict]:
-    """
-    Fetch all blocks from the BlockIndex collection for a specific agent.
-    """
+
+async def fetch_all_block_indexes(client, agent_id: str) -> list[dict]:
+    """Fetch all blocks from the BlockIndex for a specific tenant (Async)."""
     collection = client.collections.get("BlockIndex")
+    tenant_coll = collection.with_tenant(agent_id)
     results = []
     try:
-        response = collection.query.fetch_objects(
-            filters=Filter.by_property("agent_id").equal(agent_id),
-            limit=100
-        )
+        response = await tenant_coll.query.fetch_objects(limit=100)
         for obj in response.objects:
             results.append({
                 "block_id": obj.properties.get("block_id"),
@@ -102,11 +124,14 @@ def fetch_all_block_indexes(client, agent_id: str) -> list[dict]:
 
 # ── Content operations (TravelFixed / TravelDynamic) ───────────────────────────
 
-def ingest_block(client, collection_name: str, block_id: str,
-                 block_type: str, content: str, agent_id: str, tags: list[str] = None) -> None:
-    """Ingest a block's content into its Weaviate collection (TravelFixed or TravelDynamic)."""
+async def ingest_block(client, collection_name: str, block_id: str,
+                      block_type: str, content: str, agent_id: str, tags: list[str] = None) -> None:
+    """Ingest a block's content into its isolated tenant (Async)."""
     collection = client.collections.get(collection_name)
-    collection.data.insert({
+    await _ensure_tenant_async(collection, agent_id)
+    
+    tenant_coll = collection.with_tenant(agent_id)
+    await tenant_coll.data.insert({
         "content": content,
         "block_id": block_id,
         "agent_id": agent_id,
@@ -114,28 +139,23 @@ def ingest_block(client, collection_name: str, block_id: str,
         "tags": tags or [],
         "updated_at": datetime.now(timezone.utc),
     })
-    logger.debug("Block '%s' ingested into '%s' for agent '%s'.", block_id, collection_name, agent_id)
+    logger.debug("Block '%s' ingested for tenant '%s' in '%s'.", block_id, agent_id, collection_name)
 
 
-def delete_block_vectors(client, block_id: str, agent_id: str) -> None:
-    """
-    Delete all vectors for a block from TravelDynamic.
-    Fixed blocks (TravelFixed) are never deleted.
-    """
+async def delete_block_vectors(client, block_id: str, agent_id: str) -> None:
+    """Delete all vectors for a block from the local tenant (Async)."""
     collection = client.collections.get("TravelDynamic")
-    collection.data.delete_many(
-        where=Filter.by_property("block_id").equal(block_id) & Filter.by_property("agent_id").equal(agent_id)
+    tenant_coll = collection.with_tenant(agent_id)
+    await tenant_coll.data.delete_many(
+        where=Filter.by_property("block_id").equal(block_id)
     )
-    logger.debug("Weaviate vectors deleted for block '%s' (agent '%s').", block_id, agent_id)
+    logger.debug("Weaviate vectors deleted for block '%s' (tenant '%s').", block_id, agent_id)
 
 
-def setup_collections(client=None) -> None:
-    """Alias for init_all_schemas() — backward compatibility."""
+def setup_collections() -> None:
+    """Synchronous init (used once at startup)."""
     init_all_schemas()
 
 
 if __name__ == "__main__":
-    import sys
-    if "--setup" in sys.argv:
-        logger.info("Setting up Weaviate collections...")
-        init_all_schemas()
+    setup_collections()

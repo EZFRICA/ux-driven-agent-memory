@@ -25,13 +25,15 @@ weaviate_data/
 letta_data/
 chroma/
 
-# Exclude AI agent internal state
+# --- Agent System ---
+.gemini/
 .agent/
+.cortex/
 .agents/
 
-# Exclude Chainlit/Streamlit temporary files
-.chainlit/
-.files/
+# --- IDEs & UI ---
+.vscode/
+.idea/
 .streamlit/
 
 # Exclude temporary tests/scripts

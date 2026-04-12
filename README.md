@@ -112,6 +112,52 @@ See the "Brain" move:
 2. Go to `http://localhost:8080`.
 3. Ask about your profile or a specific dynamic block. Watch the nodes animatedly jump to the **HEAD** position as the Move-To-Front (MTF) algorithm prioritizes the most useful context.
 
+### 🚀 Production & Scaling (2M+ Users)
+
+The current architecture is optimized for high-concurrency (Async) and data isolation (Weaviate Multi-tenancy). To support **2,000,000+ users** in a distributed environment, the local JSON storage for DLL states should be replaced by a distributed store like **Redis**.
+
+### Why Redis for DLL?
+*   **Speed**: Sub-millisecond latency for memory retrieval (BMJ routing).
+*   **Concurrency**: Atomic operations prevent state corruption across multiple API workers.
+*   **Scalability**: Allows horizontal scaling of your FastAPI/Python backend.
+
+### Recommended Redis Implementation
+
+For production, replace `load_dll()` and `save_dll()` in `memory/dll_manager.py` with an async Redis implementation:
+
+```python
+import redis.asyncio as redis
+import json
+
+REDIS_URL = "redis://localhost:6379/0"
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+
+async def save_dll_redis(user_id: str, dll: dict):
+    """Persist DLL state to Redis with TTL (e.g., 30 days)."""
+    key = f"agent_memory:dll:{user_id}"
+    await redis_client.set(key, json.dumps(dll), ex=2592000)
+
+async def load_dll_redis(user_id: str) -> dict:
+    """Fetch DLL state from Redis. Fallback to init_dll if missing."""
+    key = f"agent_memory:dll:{user_id}"
+    data = await redis_client.get(key)
+    if data:
+        return json.loads(data)
+    return await init_dll_async(user_id)
+```
+
+---
+
+## 🛠️ Architecture Recap (Robustness)
+
+| Component | Dev/Test (Local) | Production (Scaling) |
+|---|---|---|
+| **Memory Extraction** | Letta Cloud (Async) | Letta Self-Hosted (K8s) |
+| **Vector Index** | WCD (Tenant Isolation) | Weaviate Multi-tenancy |
+| **State Storage** | **Atomic JSON Files** | **Redis / PostgreSQL** |
+| **Orchestration** | Python / LangGraph | FastAPI / Pure Async |
+| **Concurrency** | Threadpool Fallback | Native Async IO |
+
 ### 4. Multi-Tenant Isolation
 Ensure agent-level data security:
 1. Note your current `agent_id` in the sidebar.

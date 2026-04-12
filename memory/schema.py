@@ -23,11 +23,23 @@ logger = get_logger(__name__)
 
 
 def get_weaviate_client():
-    """Connect to the Weaviate Cloud cluster."""
+    """Connect to the Weaviate Cloud cluster (Sync)."""
     if not WCD_CLUSTER_URL or not WCD_API_KEY:
-        raise ValueError("Missing Weaviate environment variables (WCD_CLUSTER_URL, WCD_API_KEY).")
+        raise ValueError("Missing Weaviate environment variables.")
 
     return weaviate.connect_to_weaviate_cloud(
+        cluster_url=WCD_CLUSTER_URL,
+        auth_credentials=Auth.api_key(WCD_API_KEY),
+        headers={"X-Goog-Api-Key": GEMINI_API_KEY},
+        skip_init_checks=True,
+    )
+
+def get_weaviate_client_async():
+    """Connect to the Weaviate Cloud cluster (Async)."""
+    if not WCD_CLUSTER_URL or not WCD_API_KEY:
+        raise ValueError("Missing Weaviate environment variables.")
+
+    return weaviate.use_async_with_weaviate_cloud(
         cluster_url=WCD_CLUSTER_URL,
         auth_credentials=Auth.api_key(WCD_API_KEY),
         headers={"X-Goog-Api-Key": GEMINI_API_KEY},
@@ -46,6 +58,7 @@ def init_block_index_schema():
             client.collections.create(
                 name="BlockIndex",
                 description="Keyword metadata vectors for DLL routing (BMJ algorithm)",
+                multi_tenancy_config=Configure.multi_tenancy(enabled=True),
                 properties=[
                     Property(
                         name="keywords_text",
@@ -100,6 +113,7 @@ def init_travel_fixed_schema():
             client.collections.create(
                 name="TravelFixed",
                 description="Fixed memory blocks — profile, preferences, trip, session",
+                multi_tenancy_config=Configure.multi_tenancy(enabled=True),
                 properties=[
                     Property(
                         name="content",
@@ -153,6 +167,7 @@ def init_travel_dynamic_schema():
             client.collections.create(
                 name="TravelDynamic",
                 description="Dynamic memory blocks created during conversation",
+                multi_tenancy_config=Configure.multi_tenancy(enabled=True),
                 properties=[
                     Property(
                         name="content",

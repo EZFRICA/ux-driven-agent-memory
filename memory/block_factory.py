@@ -1,7 +1,7 @@
 from datetime import datetime
 from memory.dll_manager import update_node_keywords, save_dll
 from memory.weaviate_cloud_client import (
-    get_weaviate_client,
+    get_weaviate_client_async,
     upsert_block_index,
     delete_block_index,
     ingest_block,
@@ -61,7 +61,7 @@ def insert_node_by_type(block_type: str, new_node: dict, dll: dict) -> dict:
     return dll
 
 
-def delete_block_stitching(block_id: str, dll: dict) -> dict:
+async def delete_block_stitching(block_id: str, dll: dict) -> dict:
     """
     Remove a dynamic block from the DLL and re-stitch its neighbors.
     Also removes it from Weaviate BlockIndex and TravelDynamic.
@@ -93,15 +93,12 @@ def delete_block_stitching(block_id: str, dll: dict) -> dict:
 
     # Clean up Weaviate
     try:
-        client = get_weaviate_client()
-        try:
+        async with get_weaviate_client_async() as client:
             agent_id = dll.get("agent_id")
             if not agent_id:
                 raise ValueError("Agent ID is not defined in the DLL.")
-            delete_block_index(client, block_id, agent_id)
-            delete_block_vectors(client, block_id, agent_id)
-        finally:
-            client.close()
+            await delete_block_index(client, block_id, agent_id)
+            await delete_block_vectors(client, block_id, agent_id)
     except Exception as e:
         logger.warning("Weaviate cleanup failed for '%s': %s", block_id, e)
 
@@ -109,7 +106,7 @@ def delete_block_stitching(block_id: str, dll: dict) -> dict:
     return dll
 
 
-def create_dynamic_block(
+async def create_dynamic_block(
     block_id: str,
     label: str,
     block_type: str,
@@ -140,7 +137,7 @@ def create_dynamic_block(
     # 1. Sync to Letta Cloud (Source of Truth for creation/content)
     if letta_client:
         try:
-            letta_client.append_block(agent_id, block_id, initial_content, block_type)
+            await letta_client.append_block(agent_id, block_id, initial_content, block_type)
             logger.debug("Letta sync: block '%s' appended.", block_id)
         except Exception as e:
             logger.error("Letta sync failed for '%s'. Aborting creation. Error: %s", block_id, e)
@@ -149,23 +146,25 @@ def create_dynamic_block(
     # 2. Sync to Weaviate Cloud (Search Index & Content Backup)
     if wcd_client:
         try:
-            client = wcd_client.get_weaviate_client()
-            try:
+            async with wcd_client.get_weaviate_client_async() as client:
                 # 2A: Index Keywords
-                upsert_block_index(client, block_id, keywords, block_type, agent_id)
+                await upsert_block_index(client, block_id, keywords, block_type, agent_id)
                 # 2B: Ingest initial Content
-                wcd_client.ingest_block(client, "TravelDynamic", block_id, block_type, initial_content, agent_id)
+                await wcd_client.ingest_block(client, "TravelDynamic", block_id, block_type, initial_content, agent_id)
                 logger.debug("Weaviate content & index sync: block '%s' ingested.", block_id)
-            finally:
-                client.close()
         except Exception as e:
             # Note: Weaviate failed. Strictly speaking, we should delete from Letta here to rollback completely.
             logger.error("Weaviate sync failed for '%s'. Assuming Letta succeeded but Weaviate failed. Error: %s", block_id, e)
             try:
                 if letta_client:
-                    letta_client.delete_block(agent_id, block_id)
-            except:
-                pass
+                    await letta_client.delete_block(agent_id, block_id)
+                    logger.warning("Rollback: Letta block '%s' deleted after Weaviate failure.", block_id)
+            except Exception as rollback_err:
+                logger.error(
+                    "Rollback FAILED for block '%s': %s. "
+                    "Letta and Weaviate may be out of sync — manual cleanup required.",
+                    block_id, rollback_err,
+                )
             raise RuntimeError(f"Failed to create block in Weaviate. Rollback triggered. Error: {e}")
 
     # 3. Update Local DLL State (Only if external DBs succeed)
@@ -194,7 +193,7 @@ def create_dynamic_block(
     return dll
 
 
-def update_block_content(
+async def update_block_content(
     block_id: str,
     new_content: str,
     new_keywords: list[str],
@@ -220,7 +219,7 @@ def update_block_content(
     # 1. Update Letta Core Memory
     if letta_client:
         try:
-            letta_client.update_block(agent_id, block_id, new_content)
+            await letta_client.update_block(agent_id, block_id, new_content)
             logger.debug("Cascade: Letta block '%s' updated.", block_id)
         except Exception as e:
             logger.error("Cascade: Letta update failed for '%s'. Aborting sync. Error: %s", block_id, e)
@@ -229,24 +228,21 @@ def update_block_content(
     # 2. Update Weaviate (Content and Keywords)
     if wcd_client:
         try:
-            client = wcd_client.get_weaviate_client()
-            try:
+            async with wcd_client.get_weaviate_client_async() as client:
                 # 2A: Re-ingest content (delete old, insert new)
                 collection = "TravelFixed" if node.get("is_fixed") else "TravelDynamic"
                 
                 if collection == "TravelDynamic":
-                    wcd_client.delete_block_vectors(client, block_id, agent_id)
-                wcd_client.ingest_block(client, collection, block_id, node["type"], new_content, agent_id)
+                    await wcd_client.delete_block_vectors(client, block_id, agent_id)
+                await wcd_client.ingest_block(client, collection, block_id, node["type"], new_content, agent_id)
                 logger.debug("Cascade: Weaviate block '%s' re-ingested into '%s'.", block_id, collection)
-            finally:
-                client.close()
         except Exception as e:
             logger.error("Cascade: Weaviate sync failed for '%s'. Error: %s", block_id, e)
             raise RuntimeError(f"Failed to update block in Weaviate. Letta may be out of sync. Error: {e}")
 
     # 3. Update Local DLL State (Only if external APIs succeeded)
     # The JSON node modification happens at the very end
-    dll = update_node_keywords(block_id, new_keywords, dll)
+    dll = await update_node_keywords(block_id, new_keywords, dll)
     # Ensure node exists in our reference after update
     node = dll["nodes"][block_id]
     node["last_modified"] = datetime.now().isoformat()

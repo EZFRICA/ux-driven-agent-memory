@@ -5,6 +5,7 @@ Uses Weaviate BlockIndex for vector search instead of local embeddings.
 DLL structure (prev/next pointers) stored in metadata_links.json.
 """
 
+import fcntl
 import json
 import os
 from datetime import datetime
@@ -26,7 +27,7 @@ CERTAINTY_THRESHOLDS = {
 MIN_RELEVANCE_CERTAINTY = 0.50
 
 
-def init_dll() -> dict:
+async def init_dll() -> dict:
     """
     Initialize the Living DLL V2 with 4 fixed core blocks.
     Vectors are managed by Weaviate BlockIndex — no local embedding computation.
@@ -114,18 +115,15 @@ def init_dll() -> dict:
 
     # Ingest keyword vectors into Weaviate BlockIndex
     try:
-        from memory.weaviate_cloud_client import get_weaviate_client, setup_collections, upsert_block_index
-        client = get_weaviate_client()
-        try:
-            setup_collections(client)
+        from memory.weaviate_cloud_client import get_weaviate_client_async, upsert_block_index
+        async with get_weaviate_client_async() as client:
+            # Note: setup_collections is still sync as it's a one-time schema init
             for node_id, node in dll["nodes"].items():
                 agent_id = dll.get("agent_id")
                 if not agent_id:
                     raise ValueError("Agent ID is not defined in the DLL.")
-                upsert_block_index(client, node_id, node["keywords"], node["type"], agent_id)
-            logger.info("All 4 fixed blocks indexed in Weaviate BlockIndex.")
-        finally:
-            client.close()
+                await upsert_block_index(client, node_id, node["keywords"], node["type"], agent_id)
+            logger.info("All 4 fixed blocks indexed in Weaviate BlockIndex (Multi-tenant).")
     except Exception as e:
         logger.warning("Weaviate indexing failed during init (non-critical): %s", e)
 
@@ -133,19 +131,33 @@ def init_dll() -> dict:
     return dll
 
 
-def load_dll() -> dict:
-    """Load the DLL state from disk. Initializes a fresh DLL if no file exists."""
+async def load_dll() -> dict:
+    """Load the DLL state from disk (Async-friendly). Initializes a fresh DLL if no file exists."""
     if not os.path.exists(METADATA_FILE):
-        return init_dll()
+        return await init_dll()
     with open(METADATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def save_dll(dll: dict) -> None:
-    """Persist the DLL state to disk (JSON)."""
+    """
+    Persist the DLL state to disk (JSON) — atomic write with exclusive file lock.
+
+    Uses a write-to-tmp + os.replace() pattern:
+    - os.replace() is atomic on POSIX (macOS/Linux): readers always see a complete file.
+    - fcntl.LOCK_EX ensures only one writer at a time (concurrent Streamlit sessions).
+    """
     dll["last_modified"] = datetime.now().isoformat()
-    with open(METADATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(dll, f, ensure_ascii=False, indent=2)
+    tmp_path = METADATA_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            json.dump(dll, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())  # flush kernel buffer to disk
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+    os.replace(tmp_path, METADATA_FILE)  # atomic rename — readers never see a partial write
 
 
 def get_head_threshold(dll: dict) -> float:
@@ -154,7 +166,7 @@ def get_head_threshold(dll: dict) -> float:
     return CERTAINTY_THRESHOLDS.get(head_node["type"], 0.55)
 
 
-def search_memory(query: str, dll: dict, strict_manual: bool = False) -> list[dict]:
+async def search_memory(query: str, dll: dict, strict_manual: bool = False) -> list[dict]:
     """
     Bidirectional Metadata Jump (BMJ) — powered by Weaviate near_text.
 
@@ -170,17 +182,14 @@ def search_memory(query: str, dll: dict, strict_manual: bool = False) -> list[di
 
     # STEP 1: Query Weaviate for all block scores
     try:
-        from memory.weaviate_cloud_client import get_weaviate_client, search_block_index
-        client = get_weaviate_client()
-        try:
+        from memory.weaviate_cloud_client import get_weaviate_client_async, search_block_index
+        async with get_weaviate_client_async() as client:
             agent_id = dll.get("agent_id")
             if not agent_id:
                 raise ValueError("Agent ID is not defined in the DLL.")
-            weaviate_results = search_block_index(client, query, agent_id, limit=12)
-        finally:
-            client.close()
+            weaviate_results = await search_block_index(client, query, agent_id, limit=12)
     except Exception as e:
-        logger.error("Weaviate search failed: %s. Returning empty.", e)
+        logger.error("Weaviate async search failed: %s. Returning empty.", e)
         return []
 
     # Build certainty map: block_id → certainty
@@ -282,25 +291,22 @@ def toggle_block(block_id: str, state: bool, dll: dict) -> dict:
     return dll
 
 
-def update_node_keywords(block_id: str, keywords: list[str], dll: dict) -> dict:
-    """Update a node's keywords and re-index in Weaviate BlockIndex."""
+async def update_node_keywords(block_id: str, keywords: list[str], dll: dict) -> dict:
+    """Update a node's keywords and re-index in Weaviate BlockIndex (Async)."""
     if block_id not in dll["nodes"]:
         return dll
     dll["nodes"][block_id]["keywords"] = keywords
 
     # Re-index in Weaviate
     try:
-        from memory.weaviate_cloud_client import get_weaviate_client, upsert_block_index
-        client = get_weaviate_client()
-        try:
+        from memory.weaviate_cloud_client import get_weaviate_client_async, upsert_block_index
+        async with get_weaviate_client_async() as client:
             agent_id = dll.get("agent_id")
             if not agent_id:
                 raise ValueError("Agent ID is not defined in the DLL.")
             block_type = dll["nodes"][block_id]["type"]
-            upsert_block_index(client, block_id, keywords, block_type, agent_id)
+            await upsert_block_index(client, block_id, keywords, block_type, agent_id)
             logger.debug("Node '%s' re-indexed in Weaviate with new keywords.", block_id)
-        finally:
-            client.close()
     except Exception as e:
         logger.warning("Weaviate re-index failed for '%s': %s", block_id, e)
 

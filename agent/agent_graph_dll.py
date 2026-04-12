@@ -10,6 +10,7 @@ from langgraph.graph import StateGraph, END, START
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
+from config import GEMINI_API_KEY, USER_ID
 from memory.dll_manager import search_memory, load_dll, save_dll, move_to_front, get_all_nodes
 from memory.context_compiler import compile_working_context, get_core_block_content
 from memory.block_detector import detect_new_block_opportunity
@@ -27,14 +28,14 @@ GEMINI_MODEL = "gemini-flash-lite-latest"
 _llm = ChatGoogleGenerativeAI(
     model=GEMINI_MODEL,
     temperature=0.7,
-    google_api_key=os.getenv("GEMINI_API_KEY"),
+    google_api_key=GEMINI_API_KEY,
 )
 
 # Extractor LLM — deterministic, used for memory write-back only
 _extractor_llm = ChatGoogleGenerativeAI(
     model=GEMINI_MODEL,
     temperature=0.0,
-    google_api_key=os.getenv("GEMINI_API_KEY"),
+    google_api_key=GEMINI_API_KEY,
 )
 
 
@@ -70,7 +71,7 @@ async def _extract_and_update_memory(
     # Read current state of each relevant block for deduplication
     block_summaries = []
     for block in relevant_blocks:
-        current = get_core_block_content(agent_id, block["id"])
+        current = await get_core_block_content(agent_id, block["id"])
         block_summaries.append(
             f'- {block["id"]} ({block["type"]}): "{current.strip() or "[empty]"}"'
         )
@@ -132,7 +133,7 @@ Return ONLY a valid JSON object, keys must match the block IDs above:
             if not new_info or not new_info.strip():
                 continue
             
-            current = get_core_block_content(agent_id, block_id).strip()
+            current = (await get_core_block_content(agent_id, block_id)).strip()
             
             # Smart Clear: remove placeholders like "[No active trip]" if we have new real data
             if current.startswith("[") and current.endswith("]"):
@@ -144,10 +145,10 @@ Return ONLY a valid JSON object, keys must match the block IDs above:
                 else new_info.strip()
             )
             
-            # Transactional Update (Sync Letta + Weaviate)
+            # Transactional Update (Async Sync Letta + Weaviate)
             node = dll["nodes"].get(block_id)
             if node:
-                update_block_content(
+                await update_block_content(
                     block_id, 
                     merged, 
                     node.get("keywords", []), 
@@ -185,11 +186,11 @@ async def planner_node_dll(state: AgentState):
             break
 
     # 2. DLL Vector Routing
-    dll = load_dll()
-    relevant_blocks = search_memory(user_query, dll, strict_manual=state.get("strict_manual_mode", False))
+    dll = await load_dll()
+    relevant_blocks = await search_memory(user_query, dll, strict_manual=state.get("strict_manual_mode", False))
 
     # 3. Compile Working Context from Letta
-    context_str = compile_working_context(agent_id, relevant_blocks, user_query)
+    context_str = await compile_working_context(agent_id, relevant_blocks, user_query)
 
     # 4. Build system prompt and call Gemini
     all_nodes = get_all_nodes(dll)
